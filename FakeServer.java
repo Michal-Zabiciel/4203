@@ -2,17 +2,12 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.security.*;
-import java.security.spec.X509EncodedKeySpec;
-
 import javax.net.ssl.*;
 
-public class ServerTLS {
+public class FakeServer {
     private static final String host = "localhost";
     private static final int port = 12345;
     private static Map<String, PrintWriter> clients = new HashMap<>();
-
-    private static final String FILE_NAME = "registeredUsers.dat";
-    private static Map<String, String> registeredUsers = loadUsersFromFile();
 
     public static void main(String[] args) {
         System.out.println("Server started...");
@@ -20,26 +15,21 @@ public class ServerTLS {
         try {
             char[] password = "password".toCharArray();
             KeyStore keyStore = KeyStore.getInstance("JKS");
-            KeyStore trustStore = KeyStore.getInstance("JKS");
 
-            keyStore.load(new FileInputStream("server.jks"), password);
-            trustStore.load(new FileInputStream("server-truststore.jks"), password);
-
-
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
-            tmf.init(trustStore);
-
+            try (FileInputStream fis = new FileInputStream("keystore.jks")) {
+                keyStore.load(fis, password);
+            }
+            
+            
             KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
             kmf.init(keyStore, password);
 
             SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+            sslContext.init(kmf.getKeyManagers(), null, null);
 
             SSLServerSocketFactory ssf = sslContext.getServerSocketFactory();
 
             SSLServerSocket serverSocket = (SSLServerSocket) ssf.createServerSocket(port);
-
-            serverSocket.setNeedClientAuth(false);
 
             // enable all the cipher suites
             String[] supported = serverSocket.getSupportedCipherSuites();
@@ -55,25 +45,6 @@ public class ServerTLS {
             e.printStackTrace();
         }
         catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private static Map<String, String> loadUsersFromFile() {
-        File f = new File(FILE_NAME);
-        if (!f.exists()) return new HashMap<>();
-        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(FILE_NAME))) {
-            return (Map<String, String>) in.readObject();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return new HashMap<>();
-        }
-    }
-
-    private static void saveUsersToFile() {
-        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(FILE_NAME))) {
-            out.writeObject(registeredUsers);
-        } catch (IOException e) {
             e.printStackTrace();
         }
     }
@@ -108,19 +79,6 @@ public class ServerTLS {
                     clients.put(username, out);
                 }
 
-                out.println("Send your public key (Base64 encoded):");
-                String pubKeyStr = in.readLine();
-                System.out.println(pubKeyStr);
-
-                byte[] keyBytes = Base64.getDecoder().decode(pubKeyStr);
-                X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-                KeyFactory kf = KeyFactory.getInstance("RSA");
-                PublicKey pubKey = kf.generatePublic(spec);
-                pubKeyStr = Base64.getEncoder().encodeToString(pubKey.getEncoded());
-                System.out.println(pubKeyStr);
-                registeredUsers.put(username, pubKeyStr);
-                saveUsersToFile();
-
                 System.out.println(username + " connected.");
 
                 String fullMessage;
@@ -147,10 +105,7 @@ public class ServerTLS {
                 }
             } catch (IOException e) {
                 System.out.println("Client disconnected");
-            } 
-            catch (Exception e) {
-                e.printStackTrace();
-            }finally {
+            } finally {
                 try {
                     socket.close();
                 } catch (IOException e) {}

@@ -1,43 +1,34 @@
 import java.io.*;
 import java.net.*;
-import java.security.*;
 import javax.net.ssl.*;
 import java.security.cert.CertificateException;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
+import java.util.Base64;
+import java.security.*;
 
-public class ClientTLS {
+public class Client1 {
     private static final String SERVER_HOST = "localhost";
     private static final int SERVER_PORT = 12345;
 
     public static void main(String[] args) {
         String username = args.length > 0 ? args[0] : "Anonymous";
         try {
-            /*TrustManager[] trustManagers = new TrustManager[]{
-                new X509TrustManager() {
-                    @Override
-                    public void checkClientTrusted(X509Certificate[] x509Certificates, String s)
-                      throws CertificateException {
-                    }
-
-                    @Override
-                    public void checkServerTrusted(X509Certificate[] x509Certificates, String s)
-                      throws CertificateException {
-                    }
-
-                    @Override
-                    public X509Certificate[] getAcceptedIssuers() {
-                        return new X509Certificate[0];
-                    }
-                }
-            };*/
+            char[] password = "password".toCharArray();
+            KeyStore keyStore = KeyStore.getInstance("JKS");
             KeyStore trustStore = KeyStore.getInstance("JKS");
-            trustStore.load(new FileInputStream("client-truststore.jks"), "password".toCharArray());
+
+            keyStore.load(new FileInputStream("client1.jks"), password);
+            trustStore.load(new FileInputStream("client-truststore.jks"), password);
 
             TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
             tmf.init(trustStore);
 
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
+            kmf.init(keyStore, password);
+
             SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(null, tmf.getTrustManagers(), new SecureRandom());
+            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
 
             SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
 
@@ -54,6 +45,14 @@ public class ClientTLS {
 
             BufferedReader userInput = new BufferedReader(new InputStreamReader(System.in));
 
+            Key key = keyStore.getKey("client1", password);
+            if (!(key instanceof PrivateKey)) throw new Exception("Not a private key");
+
+            PrivateKey privateKey = (PrivateKey) key;
+            Certificate cert = keyStore.getCertificate("client1");
+            PublicKey publicKey = cert.getPublicKey();
+            String publicKeyStr = Base64.getEncoder().encodeToString(publicKey.getEncoded());
+
             new Thread(() -> {
                 try {
                     String response;
@@ -67,6 +66,9 @@ public class ClientTLS {
 
             String message;
             while ((message = userInput.readLine()) != null) {
+                if (message.equals("key")) {
+                    message = publicKeyStr;
+                }
                 out.println(message);
             }
 
