@@ -10,6 +10,7 @@ import java.security.*;
 public class Client1 {
     private static final String SERVER_HOST = "localhost";
     private static final int SERVER_PORT = 12345;
+    static String nonceString;
 
     public static void main(String[] args) {
         String username = args.length > 0 ? args[0] : "Anonymous";
@@ -53,11 +54,17 @@ public class Client1 {
             PublicKey publicKey = cert.getPublicKey();
             String publicKeyStr = Base64.getEncoder().encodeToString(publicKey.getEncoded());
 
+            
+
             new Thread(() -> {
                 try {
                     String response;
                     while ((response = in.readLine()) != null) {
                         System.out.println(response);
+                        if (response.startsWith("Nonce|")) {
+                            nonceString = response;
+                            System.out.println(nonceString);
+                        }
                     }
                 } catch (IOException e) {
                     e.printStackTrace();
@@ -68,6 +75,20 @@ public class Client1 {
             while ((message = userInput.readLine()) != null) {
                 if (message.equals("key")) {
                     message = publicKeyStr;
+                } else if (message.equals("nonce")) {
+                    String[] nonceParts = nonceString.split("\\|", 2);
+                    nonceString = nonceParts[1];
+                    System.out.println(nonceString);
+                    byte[] nonce = Base64.getDecoder().decode(nonceString);
+
+                    Signature sig = Signature.getInstance("SHA256withRSA");
+                    sig.initSign(privateKey);
+                    sig.update(nonce);
+
+                    byte[] signature = sig.sign();
+                    String signatureStr = Base64.getEncoder().encodeToString(signature);
+
+                    out.println(signatureStr);
                 }
                 out.println(message);
             }

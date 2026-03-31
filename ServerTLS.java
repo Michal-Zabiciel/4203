@@ -61,9 +61,15 @@ public class ServerTLS {
 
     private static Map<String, String> loadUsersFromFile() {
         File f = new File(FILE_NAME);
-        if (!f.exists()) return new HashMap<>();
+        if (!f.exists() || f.length() == 0) {
+            System.out.println("No valid user file found, starting fresh.");
+            return new HashMap<>();
+        }
         try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(FILE_NAME))) {
             return (Map<String, String>) in.readObject();
+        } catch (EOFException e) {
+            System.out.println("File was empty or corrupted, resetting.");
+            return new HashMap<>();
         } catch (Exception e) {
             e.printStackTrace();
             return new HashMap<>();
@@ -72,7 +78,9 @@ public class ServerTLS {
 
     private static void saveUsersToFile() {
         try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(FILE_NAME))) {
+            System.out.println("Saving users: " + registeredUsers);
             out.writeObject(registeredUsers);
+            out.flush();
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -108,18 +116,58 @@ public class ServerTLS {
                     clients.put(username, out);
                 }
 
-                out.println("Send your public key (Base64 encoded):");
-                String pubKeyStr = in.readLine();
-                System.out.println(pubKeyStr);
+                System.out.println(registeredUsers.keySet());
 
-                byte[] keyBytes = Base64.getDecoder().decode(pubKeyStr);
-                X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-                KeyFactory kf = KeyFactory.getInstance("RSA");
-                PublicKey pubKey = kf.generatePublic(spec);
-                pubKeyStr = Base64.getEncoder().encodeToString(pubKey.getEncoded());
-                System.out.println(pubKeyStr);
-                registeredUsers.put(username, pubKeyStr);
-                saveUsersToFile();
+                synchronized (registeredUsers) {
+                    if (registeredUsers.containsKey(username)) {
+                        out.println("Username is already registered. Send back decrypted nonce to prove it's you.");
+
+                        SecureRandom random = new SecureRandom();
+                        byte[] nonce = new byte[32];
+                        random.nextBytes(nonce);
+
+                        String nonceStr = Base64.getEncoder().encodeToString(nonce);
+                        out.println("Nonce|" + nonceStr);
+
+                        String signedNonceStr = in.readLine();
+                        byte[] signedNonce = Base64.getDecoder().decode(signedNonceStr);
+
+                        String storedKeyStr = registeredUsers.get(username);
+                        byte[] keyBytes = Base64.getDecoder().decode(storedKeyStr);
+
+                        KeyFactory kf = KeyFactory.getInstance("RSA");
+                        PublicKey publicKey = kf.generatePublic(new X509EncodedKeySpec(keyBytes));
+
+                        Signature sig = Signature.getInstance("SHA256withRSA");
+                        sig.initVerify(publicKey);
+                        sig.update(nonce);
+
+                        boolean valid = sig.verify(signedNonce);
+
+                        if (!valid) {
+                            out.println("Authentication failed.");
+                            impostor = true;
+                            socket.close();
+                            return;
+                        } else {
+                            out.println("Authentication successful.");
+                        }
+
+                    } else {
+                        out.println("Welcome, send your public key so we can register you (Base64 encoded):");
+                        String pubKeyStr = in.readLine();
+                        System.out.println(pubKeyStr);
+
+                        byte[] keyBytes = Base64.getDecoder().decode(pubKeyStr);
+                        X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
+                        KeyFactory kf = KeyFactory.getInstance("RSA");
+                        PublicKey pubKey = kf.generatePublic(spec);
+                        pubKeyStr = Base64.getEncoder().encodeToString(pubKey.getEncoded());
+                        System.out.println(pubKeyStr);
+                        registeredUsers.put(username, pubKeyStr);
+                        saveUsersToFile();
+                    }
+                }
 
                 System.out.println(username + " connected.");
 
