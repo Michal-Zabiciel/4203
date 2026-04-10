@@ -19,6 +19,7 @@ public class ClientTLS {
     private static final String SERVER_HOST = "localhost";
     private static final int SERVER_PORT = 12345;
     static String nonceString;
+    private static String username;
     private static String target;
     private static String targetKey;
     private static boolean loggedIn;
@@ -28,6 +29,13 @@ public class ClientTLS {
     public static void main(String[] args) {
         String clientID = args.length > 0 ? args[0] : "client1";
         try {
+            BufferedReader userInput = new BufferedReader(new InputStreamReader(System.in));
+
+            System.out.println("Enter your username:");
+            while ((username = userInput.readLine()) != null) {
+                break;
+            }
+
             char[] password = "password".toCharArray();
             KeyStore keyStore = KeyStore.getInstance("JKS");
             KeyStore trustStore = KeyStore.getInstance("JKS");
@@ -41,24 +49,6 @@ public class ClientTLS {
             KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
             kmf.init(keyStore, password);
 
-            SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
-
-            SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-            SSLSocket socket = (SSLSocket) sslSocketFactory.createSocket(SERVER_HOST, SERVER_PORT);
-               
-            // enable all the cipher suites
-            String[] supported = socket.getSupportedCipherSuites();
-            socket.setEnabledCipherSuites(supported);
-
-            BufferedReader in = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream()));
-            PrintWriter out = new PrintWriter(
-                    socket.getOutputStream(), true);
-
-            BufferedReader userInput = new BufferedReader(new InputStreamReader(System.in));
-
             Key key = keyStore.getKey(clientID, password);
             if (!(key instanceof PrivateKey)) throw new Exception("Not a private key");
 
@@ -67,13 +57,37 @@ public class ClientTLS {
             PublicKey publicKey = cert.getPublicKey();
             String publicKeyStr = Base64.getEncoder().encodeToString(publicKey.getEncoded());
 
+            usersKeys.put(username, publicKeyStr); // This adds user own public key to authenticate their own messages in history.
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+
+            SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
+
+            SSLSocket socket = (SSLSocket) sslSocketFactory.createSocket(SERVER_HOST, SERVER_PORT);
+
+            System.out.println("Connecting to the server");
+               
+            // enable all the cipher suites
+            String[] supported = socket.getSupportedCipherSuites();
+            socket.setEnabledCipherSuites(supported);
+
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+
             
 
             new Thread(() -> {
                 try {
                     String response;
                     while ((response = in.readLine()) != null) {
-                        System.out.println(response);
+                        if (response.equals("Enter your username:")) {
+                            out.println(username);
+                            continue;
+                        }
+                        
+                        //System.out.println(response);
+
                         if (response.startsWith("Nonce|")) {
                             nonceString = response;
                             String[] nonceParts = nonceString.split("\\|", 2);
@@ -114,17 +128,48 @@ public class ClientTLS {
                         }
 
                         if (response.startsWith("msg")) {
+                            //Message structure ("msg|" + username + "|" + target + "|" + encryptedSenderKeyStr + "|" + encryptedKeyStr + "|" + encryptedMessageStr);
                             String[] responseParts = response.split("\\|");
 
-                            if (responseParts.length < 2)  {
+                            if (responseParts.length < 5)  {
                                 continue;
                             }
                             String author = responseParts[1];
+                            String encryptedAESKey = "";
                             //String target = responseParts[2];
-                            String encryptedAESKey = responseParts[2];
-                            String encryptedMessage = responseParts[3];
+                            if (author.equals(username)) {
+                                encryptedAESKey = responseParts[3];
+                            } else {
+                                encryptedAESKey = responseParts[4];
+                            }
+                            String encryptedMessage = responseParts[5];
 
-                            System.out.println("Encrypted String: " + encryptedMessage);
+                            String signatureStr = responseParts[6];
+                            byte[] signatureBytes = Base64.getDecoder().decode(signatureStr);
+
+                            if (!usersKeys.containsKey(author)) {
+                                System.out.println("You don't have public key of this user: " + author + " This message might not originate from them");
+                            } else {
+                                String senderKeyStr = usersKeys.get(author);
+
+                                byte[] senderKeyBytes = Base64.getDecoder().decode(senderKeyStr);
+                                KeyFactory kf = KeyFactory.getInstance("RSA");
+                                PublicKey senderPublicKey = kf.generatePublic(new X509EncodedKeySpec(senderKeyBytes));
+
+                                String dataToVerify = author + "|" + responseParts[2] + "|" + encryptedMessage;
+
+                                Signature sig = Signature.getInstance("SHA256withRSA");
+                                sig.initVerify(senderPublicKey);
+                                sig.update(dataToVerify.getBytes());
+
+                                boolean valid = sig.verify(signatureBytes);
+
+                                if (!valid) {
+                                    System.out.println("Message signature invalid! Possible forgery.");
+                                }
+                            }
+
+                            //System.out.println("Encrypted String: " + encryptedMessage);
 
                             byte[] encryptedAESBytes = Base64.getDecoder().decode(encryptedAESKey);
 
@@ -145,9 +190,6 @@ public class ClientTLS {
 
                             System.out.println(author + ": " + plaintext);
                         }
-
-                        
-                        
                     }
                 } catch (IOException e) {
                     e.printStackTrace();
@@ -176,6 +218,23 @@ public class ClientTLS {
                         continue;
                     }
 
+                    if (fullMessage.equals("keys|")) {
+                        System.out.println("These are the stored keys used for signatures: " + usersKeys);
+                        continue;
+                    }
+
+                    if (fullMessage.startsWith("history|")) {
+                        String[] parts = fullMessage.split("\\|", 2);
+                        if (parts.length < 2)  {
+                            out.println("Invalid message format. Use history|<user>");
+                            continue;
+                        }
+
+                        System.out.println("Asking for history with user: " + parts[1]);
+                        out.println(fullMessage);
+                        continue;
+                    }
+
                     if (target != null) {
                         if (usersKeys.containsKey(target)) {
                             KeyGenerator keyGen = KeyGenerator.getInstance("AES");
@@ -190,17 +249,35 @@ public class ClientTLS {
 
                             String targetPublicKeyString = usersKeys.get(target);
 
+
                             byte[] keyBytes = Base64.getDecoder().decode(targetPublicKeyString);
                             KeyFactory kf = KeyFactory.getInstance("RSA");
                             PublicKey targetPublicKey = kf.generatePublic(new X509EncodedKeySpec(keyBytes));
+                            
 
                             Cipher rsaCipher = Cipher.getInstance("RSA");
                             rsaCipher.init(Cipher.ENCRYPT_MODE, targetPublicKey);
 
+                            Cipher senderRsaCipher = Cipher.getInstance("RSA");
+                            senderRsaCipher.init(Cipher.ENCRYPT_MODE, publicKey);
+
+                            byte[] encryptedSenderKey = senderRsaCipher.doFinal(aesKey.getEncoded());
+                            String encryptedSenderKeyStr = Base64.getEncoder().encodeToString(encryptedSenderKey);
+
                             byte[] encryptedKey = rsaCipher.doFinal(aesKey.getEncoded());
                             String encryptedKeyStr = Base64.getEncoder().encodeToString(encryptedKey);
 
-                            out.println("msg|" + target + "|" + encryptedKeyStr + "|" + encryptedMessageStr);
+                            // Signature 
+                            String dataToSign = username + "|" + target + "|" + encryptedMessageStr;
+
+                            Signature sig = Signature.getInstance("SHA256withRSA");
+                            sig.initSign(privateKey);
+                            sig.update(dataToSign.getBytes());
+
+                            byte[] signatureBytes = sig.sign();
+                            String signatureStr = Base64.getEncoder().encodeToString(signatureBytes);
+
+                            out.println("msg|" + username + "|" + target + "|" + encryptedSenderKeyStr + "|" + encryptedKeyStr + "|" + encryptedMessageStr + "|" + signatureStr);
                         } else {
                             System.out.println("Can't find target public key, sending request to server. Send your message again soon.");
                             out.println("getKey|" + target);

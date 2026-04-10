@@ -1,8 +1,19 @@
 import java.io.*;
 import java.net.*;
+import java.nio.file.Files;
 import java.util.*;
 import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.SecretKeySpec;
+
+import java.security.KeyStore.SecretKeyEntry;
+import java.security.KeyStore.ProtectionParameter;
+import java.security.KeyStore.PasswordProtection;
 
 import javax.net.ssl.*;
 
@@ -14,6 +25,8 @@ public class ServerTLS {
     private static final String FILE_NAME = "registeredUsers.dat";
     private static Map<String, String> registeredUsers = loadUsersFromFile();
 
+    private static SecretKey aesKey;
+
     public static void main(String[] args) {
         System.out.println("Server started...");
 
@@ -24,6 +37,8 @@ public class ServerTLS {
 
             keyStore.load(new FileInputStream("server.jks"), password);
             trustStore.load(new FileInputStream("server-truststore.jks"), password);
+
+            aesKey = loadOrCreateAESKey(keyStore, password);
 
 
             TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
@@ -84,6 +99,77 @@ public class ServerTLS {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private static SecretKey loadOrCreateAESKey(KeyStore keyStore, char[] password) throws Exception {
+        String alias = "chat-aes-key";
+
+        if (keyStore.containsAlias(alias)) {
+            KeyStore.Entry entry = keyStore.getEntry(alias, new KeyStore.PasswordProtection(password));
+            return ((KeyStore.SecretKeyEntry) entry).getSecretKey();
+        }
+
+        KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+        keyGen.init(256);
+
+        SecretKey aesKey = keyGen.generateKey();
+
+        KeyStore.SecretKeyEntry secretEntry = new KeyStore.SecretKeyEntry(aesKey);
+        KeyStore.ProtectionParameter protection = new KeyStore.PasswordProtection(password);
+
+        keyStore.setEntry(alias, secretEntry, protection);
+
+        try (FileOutputStream fos = new FileOutputStream("server.jks")) {
+            keyStore.store(fos, password);
+        }
+        return aesKey;
+    }
+
+    private static String getConversationFile(String user1, String user2) throws Exception {
+        List<String> users = Arrays.asList(user1, user2);
+        Collections.sort(users);
+
+        String combined = users.get(0) + users.get(1);
+
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] hash = md.digest(combined.getBytes());
+
+        return Base64.getUrlEncoder().encodeToString(hash) + ".chat";
+    }
+
+    private static byte[] encrypt(byte[] data, SecretKey key) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.ENCRYPT_MODE, key);
+        return cipher.doFinal(data);
+    }
+
+    private static byte[] decrypt(byte[] data, SecretKey key) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.DECRYPT_MODE, key);
+        return cipher.doFinal(data);
+    }
+
+    private static synchronized void saveMessage(String message) throws Exception {
+        String[] parts = message.split("\\|");
+        String sender = parts[1];
+        String receiver = parts[2];
+        String fileName = getConversationFile(sender, receiver);
+        File file = new File(fileName);
+
+        String existing = "";
+
+        if (file.exists()) {
+            byte[] encrypted = Files.readAllBytes(file.toPath());
+            byte[] decrypted = decrypt(encrypted, aesKey);
+            existing = new String(decrypted);
+        }
+
+        String newLine = message + "\n";
+        String updated = existing + newLine;
+
+        byte[] encrypted = encrypt(updated.getBytes(), aesKey);
+
+        Files.write(file.toPath(), encrypted);
     }
 
     static class ClientHandler implements Runnable {
@@ -184,6 +270,40 @@ public class ServerTLS {
                     System.out.println("Received: " + fullMessage);
                     String message = fullMessage;
 
+                    if (fullMessage.startsWith("history|")) {
+                        String[] parts = fullMessage.split("\\|", 2);
+                        if (parts.length < 2)  {
+                            out.println("Invalid message format. Use history|<user>");
+                            continue;
+                        }
+
+                        String fileName = getConversationFile(username, parts[1]);
+
+                        File file = new File(fileName);
+
+                        String existing = "";
+
+                        if (file.exists()) {
+                            byte[] encrypted = Files.readAllBytes(file.toPath());
+                            if (encrypted.length % 16 != 0) {
+                                System.out.println("Corrupted or non-encrypted file detected");
+                                existing = "";
+                            } else {
+                                byte[] decrypted = decrypt(encrypted, aesKey);
+                                existing = new String(decrypted);
+                            }
+                        } else {
+                            out.println("Can't find history with that user");
+                            continue;
+                        }
+
+                        String[] lines = existing.split("\n");
+                        for (String line : lines) {
+                            System.out.println("newLine" + line);
+                            out.println(line);
+                        }
+                    }
+
                     if (fullMessage.contains("target|")) {
                         String[] parts = fullMessage.split("\\|", 2);
                         if (parts.length < 2)  {
@@ -230,12 +350,16 @@ public class ServerTLS {
                         continue;
                     } 
 
+                    
+
                     if (target !=  null) {
                         synchronized (clients) {
                             PrintWriter writer = clients.get(target);
                             if (writer != null) {
-                                String[] messageParts = message.split("\\|", 4);
-                                writer.println(messageParts[0] + "|"+ username + "|" + messageParts[2] + "|" + messageParts[3]);
+                                writer.println(message);
+                                if (message.startsWith("msg|")) {
+                                    saveMessage(message);
+                                }
                             } else {
                                 out.println("User " + target + " not connected.");
                                 target = null;
