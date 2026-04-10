@@ -92,6 +92,8 @@ public class ServerTLS {
         private PrintWriter out;
         private String username;
         private boolean impostor = false;
+        private boolean login = false;
+        private String target;
 
         public ClientHandler(SSLSocket socket) {
             this.socket = socket;
@@ -120,52 +122,57 @@ public class ServerTLS {
 
                 synchronized (registeredUsers) {
                     if (registeredUsers.containsKey(username)) {
-                        out.println("Username is already registered. Send back decrypted nonce to prove it's you.");
-
-                        SecureRandom random = new SecureRandom();
-                        byte[] nonce = new byte[32];
-                        random.nextBytes(nonce);
-
-                        String nonceStr = Base64.getEncoder().encodeToString(nonce);
-                        out.println("Nonce|" + nonceStr);
-
-                        String signedNonceStr = in.readLine();
-                        byte[] signedNonce = Base64.getDecoder().decode(signedNonceStr);
-
-                        String storedKeyStr = registeredUsers.get(username);
-                        byte[] keyBytes = Base64.getDecoder().decode(storedKeyStr);
-
-                        KeyFactory kf = KeyFactory.getInstance("RSA");
-                        PublicKey publicKey = kf.generatePublic(new X509EncodedKeySpec(keyBytes));
-
-                        Signature sig = Signature.getInstance("SHA256withRSA");
-                        sig.initVerify(publicKey);
-                        sig.update(nonce);
-
-                        boolean valid = sig.verify(signedNonce);
-
-                        if (!valid) {
-                            out.println("Authentication failed.");
-                            impostor = true;
-                            socket.close();
-                            return;
-                        } else {
-                            out.println("Authentication successful.");
-                        }
-
+                        login = true;
                     } else {
                         out.println("Welcome, send your public key so we can register you (Base64 encoded):");
                         String pubKeyStr = in.readLine();
                         System.out.println(pubKeyStr);
 
-                        byte[] keyBytes = Base64.getDecoder().decode(pubKeyStr);
-                        X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-                        KeyFactory kf = KeyFactory.getInstance("RSA");
-                        PublicKey pubKey = kf.generatePublic(spec);
-                        pubKeyStr = Base64.getEncoder().encodeToString(pubKey.getEncoded());
-                        System.out.println(pubKeyStr);
+                        if (registeredUsers.containsValue(pubKeyStr)) {
+                            out.println("This key is already in use");
+                            impostor = true;
+                            socket.close();
+                            return;
+                        }
+
                         registeredUsers.put(username, pubKeyStr);
                         saveUsersToFile();
+                    }
+                }
+
+                if (login) {
+                    out.println("Username is already registered. Send back signed nonce to prove it's you.");
+
+                    SecureRandom random = new SecureRandom();
+                    byte[] nonce = new byte[32];
+                    random.nextBytes(nonce);
+
+                    String nonceStr = Base64.getEncoder().encodeToString(nonce);
+                    out.println("Nonce|" + nonceStr);
+
+                    String signedNonceStr = in.readLine();
+                    System.out.println(signedNonceStr);
+                    byte[] signedNonce = Base64.getDecoder().decode(signedNonceStr);
+
+                    String storedKeyStr = registeredUsers.get(username);
+                    byte[] keyBytes = Base64.getDecoder().decode(storedKeyStr);
+
+                    KeyFactory kf = KeyFactory.getInstance("RSA");
+                    PublicKey publicKey = kf.generatePublic(new X509EncodedKeySpec(keyBytes));
+
+                    Signature sig = Signature.getInstance("SHA256withRSA");
+                    sig.initVerify(publicKey);
+                    sig.update(nonce);
+
+                    boolean valid = sig.verify(signedNonce);
+
+                    if (!valid) {
+                        out.println("Authentication failed.");
+                        impostor = true;
+                        socket.close();
+                        return;
+                    } else {
+                        out.println("Authentication successful.");
                     }
                 }
 
@@ -173,23 +180,66 @@ public class ServerTLS {
 
                 String fullMessage;
                 while ((fullMessage = in.readLine()) != null) {
+                    if (fullMessage.equals("key") || fullMessage.equals("nonce")) continue;
                     System.out.println("Received: " + fullMessage);
+                    String message = fullMessage;
 
-                    String[] parts = fullMessage.split("\\|", 2);
-                    if (parts.length < 2)  {
-                        out.println("Invalid message format. Use target|message");
+                    if (fullMessage.contains("target|")) {
+                        String[] parts = fullMessage.split("\\|", 2);
+                        if (parts.length < 2)  {
+                            out.println("Invalid message format. Use target|<user>");
+                            continue;
+                        }
+
+                        target = parts[1];
+
+                        synchronized (clients) {
+                            PrintWriter writer = clients.get(target);
+                            if (writer == null) {
+                                out.println("User " + target + " not connected.");
+                                target = null;
+                                continue;
+                            } 
+                        }
+
+                        out.println("New target: " + target + " and all messages will go to them now. To set new target write target|<user>");
+                        System.out.println("New target: " + target);
                         continue;
-                    }
 
-                    String target = parts[0];
-                    String message = parts[1];
+                        
+                    } else if (fullMessage.startsWith("getKey|")) {
+                        String[] parts = fullMessage.split("\\|", 2);
+                        String targetUsername = parts[1];
+                        String storedKeyStr;
 
-                    synchronized (clients) {
-                        PrintWriter writer = clients.get(target);
-                        if (writer != null) {
-                            writer.println(username + ": " + message);
-                        } else {
-                            out.println("User " + target + " not connected.");
+                        if (parts.length < 2)  {
+                            out.println("Invalid message format. Use getKey|<user>");
+                            continue;
+                        }
+
+                        synchronized (registeredUsers) {
+                            if (registeredUsers.containsKey(targetUsername)) {
+                                storedKeyStr = registeredUsers.get(targetUsername);
+                                out.println("key|" +targetUsername + "|" + storedKeyStr);
+                            } else {
+                                out.println("No key stored for such user.");
+                            }
+                        }
+                    } else if (target == null) {
+                        out.println("No target is specified. Use target|<user>");
+                        continue;
+                    } 
+
+                    if (target !=  null) {
+                        synchronized (clients) {
+                            PrintWriter writer = clients.get(target);
+                            if (writer != null) {
+                                String[] messageParts = message.split("\\|", 4);
+                                writer.println(messageParts[0] + "|"+ username + "|" + messageParts[2] + "|" + messageParts[3]);
+                            } else {
+                                out.println("User " + target + " not connected.");
+                                target = null;
+                            }
                         }
                     }
                 }
