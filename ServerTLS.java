@@ -132,7 +132,9 @@ public class ServerTLS {
         String combined = users.get(0) + users.get(1);
 
         MessageDigest md = MessageDigest.getInstance("SHA-256");
-        byte[] hash = md.digest(combined.getBytes());
+        md.update(combined.getBytes());
+        md.update(aesKey.getEncoded());
+        byte[] hash = md.digest();
 
         return Base64.getUrlEncoder().encodeToString(hash) + ".chat";
     }
