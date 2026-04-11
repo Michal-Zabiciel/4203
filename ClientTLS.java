@@ -82,6 +82,11 @@ public class ClientTLS {
                             continue;
                         }
 
+                        if (response.equals("exit|")) {
+                            System.out.println("Server terminated connection");
+                            System.exit(0);
+                        }
+
                         if (response.startsWith("Nonce|")) {
                             nonceString = response;
                             String[] nonceParts = nonceString.split("\\|", 2);
@@ -203,7 +208,7 @@ public class ClientTLS {
                     if (fullMessage.contains("target|")) {
                         String[] parts = fullMessage.split("\\|", 2);
                         if (parts.length < 2)  {
-                            out.println("Invalid message format. Use target|<user>");
+                            System.out.println("Invalid message format. Use target|<user>");
                             continue;
                         }
                         target = parts[1];
@@ -236,6 +241,32 @@ public class ClientTLS {
                         System.out.println("Asking for history with user: " + parts[1]);
                         out.println(fullMessage);
                         continue;
+                    }
+
+                    if (fullMessage.startsWith("getKey|")) {
+                        String[] parts = fullMessage.split("\\|", 2);
+                        if (parts.length < 2 || parts[1] == null || parts[1] == "")  {
+                            System.out.println("Invalid message format. Use getKey|<user>");
+                            continue;
+                        }
+                        target = parts[1];
+
+                        if (target.equals(username)) {
+                            System.out.println("You can't get your own key.");
+                            continue;
+                        }
+
+                        if (target != null && !usersKeys.containsKey(target)) {
+                            System.out.println("Requesting key from the server");
+                            out.println("getKey|" + target);
+                        } 
+
+                        if (usersKeys.containsKey(target)) {
+                            System.out.println("Key of user: " + target + " is - " + usersKeys.get(target));
+                        }
+
+                        continue;
+                        
                     }
 
                     if (target != null) {

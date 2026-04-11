@@ -270,6 +270,7 @@ public class ServerTLS {
                 synchronized (clients) {
                     if (clients.containsKey(username)) {
                         out.println("Username already taken. Disconnecting.");
+                        out.println("exit|");
                         impostor = true;
                         socket.close();
                         return;
@@ -289,6 +290,7 @@ public class ServerTLS {
 
                         if (registeredUsers.containsValue(pubKeyStr)) {
                             out.println("This key is already in use");
+                            out.println("exit|");
                             impostor = true;
                             socket.close();
                             return;
@@ -328,6 +330,7 @@ public class ServerTLS {
 
                     if (!valid) {
                         out.println("Authentication failed.");
+                        out.println("exit|");
                         socket.close();
                         return;
                     } else {
@@ -402,13 +405,14 @@ public class ServerTLS {
                         
                     } else if (fullMessage.startsWith("getKey|")) {
                         String[] parts = fullMessage.split("\\|", 2);
-                        String targetUsername = parts[1];
-                        String storedKeyStr;
-
-                        if (parts.length < 2)  {
+                        
+                        if (parts.length < 2 || parts[1] == null)  {
                             out.println("Invalid message format. Use getKey|<user>");
                             continue;
                         }
+
+                        String targetUsername = parts[1];
+                        String storedKeyStr;
 
                         synchronized (registeredUsers) {
                             if (registeredUsers.containsKey(targetUsername)) {
