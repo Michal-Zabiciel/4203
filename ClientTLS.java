@@ -1,14 +1,11 @@
 import java.io.*;
-import java.net.*;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.*;
-import java.security.cert.CertificateException;
 import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.HashMap;
@@ -21,7 +18,6 @@ public class ClientTLS {
     static String nonceString;
     private static String username;
     private static String target;
-    private static String targetKey;
     private static boolean loggedIn;
     private static Map<String, String> usersKeys = new HashMap<>();
 
@@ -85,8 +81,10 @@ public class ClientTLS {
                             out.println(username);
                             continue;
                         }
-                        
-                        //System.out.println(response);
+
+                        if (!loggedIn) {
+                            System.out.println(response);
+                        }
 
                         if (response.startsWith("Nonce|")) {
                             nonceString = response;
@@ -210,6 +208,11 @@ public class ClientTLS {
                         }
                         target = parts[1];
 
+                        if (target.equals(username)) {
+                            System.out.println("You can't write messages to yourself.");
+                            continue;
+                        }
+
                         if (target != null && !usersKeys.containsKey(target)) {
                             out.println("getKey|" + target);
                         }
@@ -288,18 +291,18 @@ public class ClientTLS {
                         System.out.println("Can't send a message without a target, use target|<user>");
                     }
                 } else {
-                    if (fullMessage.equals("key")) {
+                    if (fullMessage.equals("key|")) {
                         fullMessage = publicKeyStr;
                         out.println(fullMessage);
-                        continue;
+                    } else {
+                        System.out.println("To log in send your key by writing 'key|'");
                     }
-                    out.println(fullMessage);
+                    
                 }
             }
         } catch (IOException e) {
             e.printStackTrace();
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             e.printStackTrace();
         }
     }

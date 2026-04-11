@@ -1,5 +1,4 @@
 import java.io.*;
-import java.net.*;
 import java.nio.file.Files;
 import java.util.*;
 import java.security.*;
@@ -8,25 +7,25 @@ import java.security.spec.X509EncodedKeySpec;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.spec.SecretKeySpec;
-
-import java.security.KeyStore.SecretKeyEntry;
-import java.security.KeyStore.ProtectionParameter;
-import java.security.KeyStore.PasswordProtection;
+import javax.crypto.spec.GCMParameterSpec;
 
 import javax.net.ssl.*;
 
 public class ServerTLS {
-    private static final String host = "localhost";
     private static final int port = 12345;
     private static Map<String, PrintWriter> clients = new HashMap<>();
+    private static Map<String, String> registeredUsers = new HashMap<>();
 
     private static final String FILE_NAME = "registeredUsers.dat";
-    private static Map<String, String> registeredUsers = loadUsersFromFile();
 
     private static SecretKey aesKey;
 
+    public static final String SHA_CRYPT = "SHA-256";
+    public static final String AES_ALGORITHM = "AES";
+    public static final String AES_ALGORITHM_GCM = "AES/GCM/NoPadding";
+
+    public static final Integer IV_LENGTH_ENCRYPT = 12;
+    public static final Integer TAG_LENGTH_ENCRYPT = 16;
     public static void main(String[] args) {
         System.out.println("Server started...");
 
@@ -39,7 +38,6 @@ public class ServerTLS {
             trustStore.load(new FileInputStream("server-truststore.jks"), password);
 
             aesKey = loadOrCreateAESKey(keyStore, password);
-
 
             TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
             tmf.init(trustStore);
@@ -60,6 +58,8 @@ public class ServerTLS {
             String[] supported = serverSocket.getSupportedCipherSuites();
             serverSocket.setEnabledCipherSuites(supported);
 
+            registeredUsers = loadUsersFromFile();
+
             while (true) {
                 SSLSocket clientSocket = (SSLSocket) serverSocket.accept();
                 System.out.println("New client connected");
@@ -76,29 +76,89 @@ public class ServerTLS {
 
     private static Map<String, String> loadUsersFromFile() {
         File f = new File(FILE_NAME);
+
         if (!f.exists() || f.length() == 0) {
             System.out.println("No valid user file found, starting fresh.");
             return new HashMap<>();
         }
-        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(FILE_NAME))) {
-            return (Map<String, String>) in.readObject();
-        } catch (EOFException e) {
-            System.out.println("File was empty or corrupted, resetting.");
-            return new HashMap<>();
+
+        try {
+            byte[] encrypted = Files.readAllBytes(f.toPath());
+            byte[] decrypted = localGCMDecrypt(encrypted);
+
+            ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(decrypted));
+
+            return (Map<String, String>) ois.readObject();
+
         } catch (Exception e) {
+            System.out.println("Tampering detected or corrupted file! Resetting users.");
             e.printStackTrace();
             return new HashMap<>();
         }
     }
 
     private static void saveUsersToFile() {
-        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(FILE_NAME))) {
-            System.out.println("Saving users: " + registeredUsers);
-            out.writeObject(registeredUsers);
-            out.flush();
-        } catch (IOException e) {
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            ObjectOutputStream oos = new ObjectOutputStream(bos);
+            oos.writeObject(registeredUsers);
+            oos.flush();
+
+            byte[] plainData = bos.toByteArray();
+
+            byte[] encrypted = localGCMEncrypt(plainData);
+
+            FileOutputStream fos = new FileOutputStream(FILE_NAME);
+            fos.write(encrypted);
+            fos.close();
+
+            System.out.println("Users saved securely.");
+
+        } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    // GCM encryption followed with the tutorial from https://medium.com/@johnvazna/implementing-local-aes-gcm-encryption-and-decryption-in-java-ac1dacaaa409
+
+    public static byte[] localGCMEncrypt(byte[] plainBytes) throws Exception {
+        // Generate a random IV
+        byte[] iv = new byte[IV_LENGTH_ENCRYPT];
+        SecureRandom secureRandom = new SecureRandom();
+        secureRandom.nextBytes(iv);
+
+        // Initialize cipher in AES-GCM mode
+        Cipher cipher = Cipher.getInstance(AES_ALGORITHM_GCM);
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_LENGTH_ENCRYPT * 8, iv);
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey, gcmSpec);
+
+        // Encrypt the plainbytes
+        byte[] encryptedBytes = cipher.doFinal(plainBytes);
+
+        // Combine IV and encrypted text
+        byte[] combinedIvAndCipherText = new byte[iv.length + encryptedBytes.length];
+        System.arraycopy(iv, 0, combinedIvAndCipherText, 0, iv.length);
+        System.arraycopy(encryptedBytes, 0, combinedIvAndCipherText, iv.length, encryptedBytes.length);
+
+        return combinedIvAndCipherText;
+    }
+
+    public static byte[] localGCMDecrypt(byte[] decodedCipherText) throws Exception {
+        // Extract IV and encrypted text
+        byte[] iv = new byte[IV_LENGTH_ENCRYPT];
+        System.arraycopy(decodedCipherText, 0, iv, 0, iv.length);
+        byte[] encryptedText = new byte[decodedCipherText.length - IV_LENGTH_ENCRYPT];
+        System.arraycopy(decodedCipherText, IV_LENGTH_ENCRYPT, encryptedText, 0, encryptedText.length);
+
+        // Initialize cipher in AES-GCM mode
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_LENGTH_ENCRYPT * 8, iv);
+        Cipher cipher = Cipher.getInstance(AES_ALGORITHM_GCM);
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, gcmSpec);
+
+        // Decrypt the ciphertext
+        byte[] decryptedBytes = cipher.doFinal(encryptedText);
+
+        return decryptedBytes;
     }
 
     private static SecretKey loadOrCreateAESKey(KeyStore keyStore, char[] password) throws Exception {
@@ -225,6 +285,7 @@ public class ServerTLS {
 
                         registeredUsers.put(username, pubKeyStr);
                         saveUsersToFile();
+                        out.println("Authentication successful.");
                     }
                 }
 
@@ -256,7 +317,6 @@ public class ServerTLS {
 
                     if (!valid) {
                         out.println("Authentication failed.");
-                        impostor = true;
                         socket.close();
                         return;
                     } else {

@@ -1,11 +1,9 @@
 import java.io.*;
-import java.net.*;
 import java.util.*;
 import java.security.*;
 import javax.net.ssl.*;
 
 public class FakeServer {
-    private static final String host = "localhost";
     private static final int port = 12345;
     private static Map<String, PrintWriter> clients = new HashMap<>();
 
