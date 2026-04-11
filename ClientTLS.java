@@ -82,10 +82,6 @@ public class ClientTLS {
                             continue;
                         }
 
-                        if (!loggedIn) {
-                            System.out.println(response);
-                        }
-
                         if (response.startsWith("Nonce|")) {
                             nonceString = response;
                             String[] nonceParts = nonceString.split("\\|", 2);
@@ -117,6 +113,7 @@ public class ClientTLS {
                         }
 
                         if (response.equals("Authentication successful.")) {
+                            System.out.println(response);
                             loggedIn = true;
                             continue;
                         }
@@ -187,7 +184,10 @@ public class ClientTLS {
                             String plaintext = new String(decrypted);
 
                             System.out.println(author + ": " + plaintext);
+                            continue;
                         }
+
+                        System.out.println(response);
                     }
                 } catch (IOException e) {
                     e.printStackTrace();

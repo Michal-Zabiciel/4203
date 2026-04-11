@@ -87,8 +87,19 @@ public class ServerTLS {
             byte[] decrypted = localGCMDecrypt(encrypted);
 
             ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(decrypted));
+            Object obj = ois.readObject();
 
-            return (Map<String, String>) ois.readObject();
+            if (!(obj instanceof Map)) throw new IOException("Invalid data format: not a Map");
+
+            Map<String, String> result = new HashMap<>();
+            Map<?, ?> rawMap = (Map<?, ?>) obj;
+
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                if (!(entry.getKey() instanceof String) || !(entry.getValue() instanceof String)) throw new IOException("Invalid map contents");
+                result.put((String) entry.getKey(), (String) entry.getValue());
+            }
+
+            return result;
 
         } catch (Exception e) {
             System.out.println("Tampering detected or corrupted file! Resetting users.");
